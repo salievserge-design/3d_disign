@@ -1,0 +1,8 @@
+numpy
+shapely
+trimesh
+mapbox_earcut
+manifold3d
+fonttools
+matplotlib
+pillow
