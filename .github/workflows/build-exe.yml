@@ -1,0 +1,68 @@
+name: Сборка НОМЕРОК 3D (Windows exe)
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "app/**"
+      - "fonts/**"
+      - "generate_keychain.py"
+      - "nomerok3d.spec"
+      - "requirements-app.txt"
+      - ".github/workflows/build-exe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Зависимости
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-app.txt
+          pip install pyinstaller==6.11.1
+
+      - name: Сборка exe
+        run: pyinstaller --noconfirm --clean nomerok3d.spec
+
+      - name: Проверка, что файл на месте
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem dist -Filter *.exe | Select-Object -First 1
+          if (-not $exe) { throw "exe не собрался" }
+          "Собрано: $($exe.Name), $([math]::Round($exe.Length/1MB,1)) МБ"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NOMEROK-3D-windows
+          path: dist/*.exe
+          if-no-files-found: error
+
+      - name: Выложить в релиз app-latest
+        if: github.ref_name != 'main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete app-latest --yes --cleanup-tag 2>$null
+          gh release create app-latest (Get-ChildItem dist/*.exe).FullName `
+            --target $env:GITHUB_SHA `
+            --title "НОМЕРОК 3D — последняя сборка" `
+            --notes "Конструктор брелоков-автономеров для Bambu Lab A1 без AMS.
+
+          Скачай .exe, запусти — установка не нужна. Внутри: выбор номера колёсиками,
+          крепление (ушко под карабин или отверстие в пластине) с ограничением размера,
+          надпись-гравировка на обороте и генерация 3MF/STL прямо в выбранную папку.
+
+          Windows 10/11 x64. При первом запуске SmartScreen может спросить подтверждение:
+          «Подробнее» → «Выполнить в любом случае» (файл без подписи, это нормально)."

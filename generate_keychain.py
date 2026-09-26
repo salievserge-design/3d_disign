@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import math
 import os
+import sys
 import zipfile
 from dataclasses import dataclass, field
 
@@ -32,7 +33,8 @@ from shapely import affinity
 from shapely.geometry import Polygon, box
 from shapely.ops import unary_union
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+# в собранном .exe данные лежат во временной папке PyInstaller
+HERE = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 WHITE = (0.95, 0.95, 0.96)   # цвета превью: белый пластик / чёрный пластик
 BLACK = (0.11, 0.11, 0.13)
 FONT_PLATE = os.path.join(HERE, "fonts", "RoadNumbers2.0.ttf")
@@ -117,6 +119,7 @@ class Font:
         self.cmap = self.tt.getBestCmap()
         self.gs = self.tt.getGlyphSet()
         self.upem = self.tt["head"].unitsPerEm
+        self._cache: dict[str, object] = {}     # разобранные контуры глифов
 
     def has(self, ch: str) -> bool:
         return ord(ch) in self.cmap
@@ -127,6 +130,20 @@ class Font:
 
     def glyph(self, ch: str) -> Polygon:
         """Полигон глифа в единицах em (базовая линия y=0, начало пера x=0)."""
+        hit = self._cache.get(ch)
+        if hit is not None:
+            if isinstance(hit, Exception):
+                raise hit
+            return hit
+        try:
+            g = self._glyph_uncached(ch)
+        except Exception as e:                 # запоминаем и отказы — не парсим дважды
+            self._cache[ch] = e
+            raise
+        self._cache[ch] = g
+        return g
+
+    def _glyph_uncached(self, ch: str) -> Polygon:
         gname = self.cmap[ord(ch)]
         pen = PolyPen(self.gs)
         self.gs[gname].draw(pen)
@@ -192,6 +209,11 @@ def sized_char(font: Font, ch: str, cap_h: float, ref_h: float) -> Placed:
 # ─────────────────────────────────────────────────────────────────────────────
 # Геометрия
 # ─────────────────────────────────────────────────────────────────────────────
+def circle(cx: float, cy: float, r: float, n: int = 96) -> Polygon:
+    t = np.linspace(0, 2 * math.pi, n, endpoint=False)
+    return Polygon(np.column_stack([cx + r * np.cos(t), cy + r * np.sin(t)]))
+
+
 def rounded_rect(x0, y0, x1, y1, r) -> Polygon:
     r = min(r, (x1 - x0) / 2, (y1 - y0) / 2)
     if r <= 0:
@@ -214,6 +236,8 @@ class Design:
     base_h: float = 2.4
     text_h: float = 0.6
     hole_d: float = 4.0
+    mount: str = "hole"       # hole — отверстие в пластине, ear — ушко сбоку, none
+    ear_wall: float = 2.2     # толщина материала вокруг отверстия в ушке
     back_text: str = "Москвич 3"
     back_depth: float = 0.4   # глубина гравировки на обороте (кратна слою!)
     with_hole: bool = True
@@ -268,13 +292,23 @@ def build(d: Design) -> Design:
     else:
         main_x1 = inner_x1
 
-    # ── отверстие под кольцо (в левом поле, как штатное крепёжное) ───────────
+    # ── крепление: отверстие в пластине либо ушко сбоку (под карабин) ───────
+    mount = d.mount if d.mount in ("hole", "ear", "none") else \
+        ("hole" if d.with_hole else "none")
     hole_r = d.hole_d / 2
-    hole_cx = max(inner_x0 + hole_r + 1.2, 2.4 + hole_r)
     hole_cy = H / 2
+    hole_cx, ear_ext = None, 0.0
     main_x0 = inner_x0
-    if d.with_hole:
+    if mount == "hole":
+        hole_cx = max(inner_x0 + hole_r + 1.2, 2.4 + hole_r)
         main_x0 = hole_cx + hole_r + 1.0                # текст начинается за отверстием
+    elif mount == "ear":
+        R = hole_r + d.ear_wall                          # наружный радиус ушка
+        hole_cx = -R * 0.35                              # ушко наполовину в пластине
+        ear_ext = R * 1.35                               # насколько торчит влево
+        plate = plate.union(circle(hole_cx, hole_cy, R))
+        fil = min(1.6, d.ear_wall)                       # скругляем стык с пластиной
+        plate = plate.buffer(fil, quad_segs=24).buffer(-fil, quad_segs=24)
 
     # ── основная группа (буква цифры цифры цифры буква буква) ───────────────
     chars = [CYR2LAT.get(c.upper(), c.upper()) for c in d.number]
@@ -342,9 +376,8 @@ def build(d: Design) -> Design:
                                             inner_y0 + pad))
 
     ink = unary_union(black)
-    if d.with_hole:
-        hole = Polygon([(hole_cx + hole_r * math.cos(t), hole_cy + hole_r * math.sin(t))
-                        for t in np.linspace(0, 2 * math.pi, 64, endpoint=False)])
+    if mount != "none":
+        hole = circle(hole_cx, hole_cy, hole_r)
         plate = plate.difference(hole)
         ink = ink.difference(hole.buffer(0.4))
 
@@ -353,7 +386,7 @@ def build(d: Design) -> Design:
     # ── гравировка на обороте (печатается на столе, поэтому зеркалим) ────────
     back, back_cap = None, 0.0
     if d.back_text.strip():
-        bx0 = (hole_cx + hole_r + 1.5) if d.with_hole else 2.0
+        bx0 = (hole_cx + hole_r + 1.5) if mount == "hole" else 2.0
         bx1 = d.length - 2.0
         box_w, box_h = bx1 - bx0, H - 2 * 1.8
         g = dejavu().line(d.back_text, 5.0)
@@ -367,26 +400,49 @@ def build(d: Design) -> Design:
                                   H / 2 - (mny + mxy) / 2)
         back = back.intersection(plate.buffer(-1.0))
 
+    # ушко торчит в минус по X — сдвигаем всё так, чтобы модель начиналась с нуля
+    if ear_ext:
+        plate = affinity.translate(plate, ear_ext, 0)
+        ink = affinity.translate(ink, ear_ext, 0)
+        if back is not None:
+            back = affinity.translate(back, ear_ext, 0)
+        hole_cx += ear_ext
+
     d.plate, d.ink, d.back = plate, ink, back
     d.info = dict(S=S, H=H, frame_w=frame_w, scale=scale,
                   digit_h=G_DIGIT_H * S * scale,
                   letter_h=G_DIGIT_H * S * scale * let_ref / dig_ref,
-                  hole=(hole_cx, hole_cy, d.hole_d) if d.with_hole else None,
+                  hole=(hole_cx, hole_cy, d.hole_d) if mount != "none" else None,
+                  mount=mount, ear_ext=ear_ext,
+                  total_length=d.length + ear_ext,
                   corner=corner, back_cap=back_cap)
     return d
+
+
+def hole_limits(length: float, mount: str) -> tuple[float, float]:
+    """Разрешённый диаметр отверстия, мм: физика, а не фантазия.
+    В пластине — чтобы от края отверстия до края брелока осталось ≥ 2 мм
+    материала; в ушке — просто разумный потолок под большой карабин."""
+    H = G_H * (length / G_LEN)
+    if mount == "ear":
+        return 2.0, 12.0
+    return 2.0, max(2.0, round(H - 4.0, 1))
 
 
 _DEJAVU = None
 
 
 def dejavu() -> Font:
-    """DejaVu Sans Bold (идёт вместе с matplotlib) — для RUS и надписи на обороте:
-    в шрифте госномеров нет ни латиницы R/U/S, ни строчной кириллицы."""
+    """DejaVu Sans Bold — для RUS и надписи на обороте: в шрифте госномеров
+    нет ни латиницы R/U/S, ни строчной кириллицы."""
     global _DEJAVU
     if _DEJAVU is None:
-        import matplotlib
-        _DEJAVU = Font(os.path.join(os.path.dirname(matplotlib.__file__),
-                                    "mpl-data", "fonts", "ttf", "DejaVuSans-Bold.ttf"))
+        path = os.path.join(HERE, "fonts", "DejaVuSans-Bold.ttf")
+        if not os.path.exists(path):        # запасной путь: копия из matplotlib
+            import matplotlib
+            path = os.path.join(os.path.dirname(matplotlib.__file__),
+                                "mpl-data", "fonts", "ttf", "DejaVuSans-Bold.ttf")
+        _DEJAVU = Font(path)
     return _DEJAVU
 
 
@@ -560,7 +616,7 @@ def preview_top(d: Design, path: str):
                 codes.extend([MPath.MOVETO] + [MPath.LINETO] * (len(c) - 2) + [MPath.CLOSEPOLY])
         return PathPatch(MPath(verts, codes), **kw)
 
-    W, H = d.length, d.info["H"]
+    W, H = d.info["total_length"], d.info["H"]
     fig, ax = plt.subplots(figsize=(W / 8, (H + 10) / 8), dpi=200)
     ax.add_patch(patch(d.plate, facecolor="white", edgecolor="#b8bcc2", lw=1.2, zorder=2))
     ax.add_patch(patch(d.ink, facecolor="#16181c", edgecolor="none", zorder=3))
@@ -608,7 +664,7 @@ def preview_pause(d: Design, path: str, layer_h: float):
         return PathPatch(MPath(verts, codes), **kw)
 
     n_base = int(round(d.base_h / layer_h))
-    W, H = d.length, d.info["H"]
+    W, H = d.info["total_length"], d.info["H"]
     fig, axes = plt.subplots(2, 1, figsize=(W / 9, 2 * (H + 16) / 9), dpi=200)
     for ax, show_ink in zip(axes, (False, True)):
         ax.add_patch(patch(d.plate, facecolor="#f4f5f7", edgecolor="#9aa0a6", lw=1.0, zorder=2))
@@ -738,7 +794,8 @@ def make_meshes(d: Design):
         except Exception as e:
             print("!! не удалось вырезать гравировку:", e)
     text = extrude(d.ink, d.text_h, z=d.base_h)
-    cx, cy = d.length / 2, d.info["H"] / 2
+    mnx, mny, mxx, mxy = d.plate.bounds        # с ушком габарит шире, чем length
+    cx, cy = (mnx + mxx) / 2, (mny + mxy) / 2
     for m in (base, text):
         m.apply_translation([-cx, -cy, 0])
     return base, text

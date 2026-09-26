@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>НОМЕРОК 3D — конструктор брелоков-автономеров</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="/static/icon.svg">
+</head>
+<body>
+
+<header class="top">
+  <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 64 26" aria-hidden="true">
+      <rect x="1" y="1" width="62" height="24" rx="6" class="bm-plate"/>
+      <rect x="4" y="4" width="56" height="18" rx="4" class="bm-frame"/>
+      <text x="20" y="18.4" class="bm-num">433</text>
+      <line x1="42" y1="4" x2="42" y2="22" class="bm-div"/>
+      <text x="51" y="14" class="bm-reg">126</text>
+      <text x="51" y="20" class="bm-rus">RUS</text>
+    </svg>
+    <div class="brand-text">
+      <div class="brand-name">НОМЕРОК <span>3D</span></div>
+      <div class="brand-sub">конструктор брелоков-автономеров</div>
+    </div>
+  </div>
+  <div class="top-right">
+    <span class="badge" id="modeBadge">—</span>
+    <button class="btn ghost" id="helpBtn">Как печатать</button>
+  </div>
+</header>
+
+<main class="layout">
+
+  <!-- ЛЕВАЯ КОЛОНКА: параметры -->
+  <section class="panel controls">
+
+    <div class="block">
+      <div class="block-head">
+        <h2>Номер автомобиля</h2>
+        <button class="link" id="pasteBtn">вставить целиком</button>
+      </div>
+      <div class="plate-input">
+        <div class="wheels" id="wheelsMain"></div>
+        <div class="plate-sep"></div>
+        <div class="wheels region" id="wheelsRegion"></div>
+      </div>
+      <div class="hint">Крути колёсико мышкой, тяни или просто набери с клавиатуры.
+        Буквы — только те 12, что бывают на российских номерах.</div>
+      <div class="paste-row hidden" id="pasteRow">
+        <input type="text" id="pasteInput" placeholder="Р433ЕК126" autocomplete="off" spellcheck="false">
+        <button class="btn small" id="pasteApply">Применить</button>
+      </div>
+    </div>
+
+    <div class="block">
+      <div class="block-head"><h2>Марка на обороте</h2></div>
+      <input type="text" id="backText" class="text-input" maxlength="24"
+             placeholder="Changan" autocomplete="off">
+      <div class="hint">Вдавленная надпись на тыльной стороне. Оставь поле пустым — оборот будет гладким.</div>
+    </div>
+
+    <div class="block">
+      <div class="block-head"><h2>Крепление</h2></div>
+      <div class="segmented" id="mountSeg">
+        <button data-v="ear" class="seg">
+          <svg viewBox="0 0 32 20"><path d="M9 2h20a4 4 0 0 1 4 4v8a4 4 0 0 1-4 4H9a8 8 0 1 1 0-16z"/><circle cx="8" cy="10" r="3.4" class="cut"/></svg>
+          <span>Ушко</span></button>
+        <button data-v="hole" class="seg">
+          <svg viewBox="0 0 32 20"><rect x="1" y="2" width="30" height="16" rx="4"/><circle cx="9" cy="10" r="3.4" class="cut"/></svg>
+          <span>Отверстие</span></button>
+        <button data-v="none" class="seg">
+          <svg viewBox="0 0 32 20"><rect x="1" y="2" width="30" height="16" rx="4"/></svg>
+          <span>Без</span></button>
+      </div>
+
+      <div id="holeWrap">
+        <div class="row-between">
+          <label for="holeD">Диаметр отверстия</label>
+          <div class="num-box"><input type="number" id="holeD" step="0.5"><span>мм</span></div>
+        </div>
+        <input type="range" id="holeRange" step="0.1" class="slider">
+        <div class="chips">
+          <button class="chip" data-hole="4">кольцо 4 мм</button>
+          <button class="chip" data-hole="6">карабин 6 мм</button>
+          <button class="chip" data-hole="8">карабин 8 мм</button>
+        </div>
+        <div class="hint" id="holeHint"></div>
+      </div>
+    </div>
+
+    <div class="block">
+      <div class="block-head"><h2>Размер</h2></div>
+      <div class="row-between">
+        <label for="lengthD">Длина пластины</label>
+        <div class="num-box"><input type="number" id="lengthD" step="1"><span>мм</span></div>
+      </div>
+      <input type="range" id="lengthRange" min="45" max="110" step="1" class="slider">
+      <div class="hint">Стандарт — 60 мм. Больше пластина — крупнее цифры и больше места для крепления.</div>
+    </div>
+
+    <details class="block advanced">
+      <summary><h2>Тонкая настройка</h2><span class="chev">▾</span></summary>
+      <div class="adv-grid">
+        <label>Высота слоя<div class="num-box"><input type="number" id="layerH" step="0.02"><span>мм</span></div></label>
+        <label>Белая подложка<div class="num-box"><input type="number" id="baseH" step="0.2"><span>мм</span></div></label>
+        <label>Чёрный рельеф<div class="num-box"><input type="number" id="textH" step="0.2"><span>мм</span></div></label>
+        <label>Глубина гравировки<div class="num-box"><input type="number" id="backDepth" step="0.2"><span>мм</span></div></label>
+      </div>
+      <div class="hint">Толщина подложки должна быть кратна высоте слоя — иначе цвет разделится
+        не по границе слоёв. Приложение округляет само.</div>
+    </details>
+  </section>
+
+  <!-- ПРАВАЯ КОЛОНКА: превью и вывод -->
+  <section class="right">
+
+    <div class="panel preview">
+      <div class="preview-head">
+        <h2>Как будет выглядеть</h2>
+        <div class="tabs">
+          <button class="tab active" data-side="front">Лицо</button>
+          <button class="tab" data-side="back">Оборот</button>
+        </div>
+      </div>
+      <div class="stage" id="stage">
+        <div class="stage-inner" id="svgHost"></div>
+        <div class="stage-caption" id="sizeCaption">—</div>
+      </div>
+      <div class="stat-grid" id="statGrid"></div>
+      <div class="warn-list" id="warnList"></div>
+    </div>
+
+    <div class="panel out">
+      <div class="block-head"><h2>Готовые файлы</h2></div>
+      <div class="row-between out-row">
+        <div class="path-box"><span id="outPath">—</span></div>
+        <button class="btn ghost" id="browseBtn">Выбрать папку…</button>
+      </div>
+
+      <div class="queue" id="queue"></div>
+
+      <div class="actions">
+        <button class="btn primary" id="makeBtn">
+          <svg viewBox="0 0 20 20" class="ic"><path d="M10 2v11m0 0 4-4m-4 4-4-4M3 16h14"/></svg>
+          Создать 3MF
+        </button>
+        <button class="btn" id="addBtn">+ В список</button>
+      </div>
+      <div class="hint">«В список» — чтобы напечатать несколько брелоков за один раз:
+        они лягут на один стол и филамент придётся сменить всего однажды.</div>
+
+      <div class="result hidden" id="result"></div>
+    </div>
+  </section>
+</main>
+
+<div class="modal-back hidden" id="helpModal">
+  <div class="modal">
+    <div class="modal-head">
+      <h2>Печать на Bambu Lab A1 без AMS</h2>
+      <button class="icon-btn" id="helpClose">✕</button>
+    </div>
+    <div class="modal-body">
+      <ol class="steps">
+        <li><b>Открой 3MF</b> в Bambu Studio (File → Open Project). Уведомление
+          «load geometry data only» — нормальное, файл не сломан. Заправь <b>белый</b> пластик.
+          Профиль <b>0.20 mm Standard</b>, заполнение 100 %, без поддержек.
+          <b>Высоту слоя не меняй</b> — от неё зависит слой паузы.</li>
+        <li><b>Нарежь</b> (Slice) и перейди в <b>Предпросмотр</b> (Preview). На вертикальном
+          ползунке слоёв справа: «<b>+</b>» → <b>Jump to Layer</b> → номер слоя паузы
+          (приложение показывает его в карточке «Пауза») → «<b>+</b>» → <b>Add Pause</b>.
+          Нажми <b>Нарезку ещё раз</b> — иначе пауза не попадёт в G-code.</li>
+        <li><b>Печатай.</b> На паузе: Филамент → Выгрузить, поставь <b>чёрный</b> → Загрузить,
+          прогони пластик до чистого цвета и жми <b>Resume</b>.</li>
+      </ol>
+      <div class="note">
+        <b>Почему пауза ставится руками.</b> Bambu Studio принимает паузы только из
+        собственных проектов — в чужом 3MF он грузит одну геометрию. А «Change Filament»
+        на A1 без AMS принтер просто игнорирует. Четыре клика — и всё работает.
+      </div>
+      <div class="note">
+        <b>Первый слой в предпросмотре «дырявый»</b> — это гравировка на обороте: брелок
+        лежит на столе надписью вниз. Так и должно быть.
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast-host" id="toasts"></div>
+<div class="busy hidden" id="busy"><div class="spinner"></div><span id="busyText">Считаю…</span></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
