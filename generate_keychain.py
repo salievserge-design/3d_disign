@@ -808,10 +808,16 @@ def tag_of(number: str, region: str) -> str:
 
 
 def make_variant(number: str, region: str, back_text: str, a, outdir: str):
+    mount = "none" if a.no_hole else a.mount
+    lo, hi = hole_limits(a.length, mount)
+    hole_d = min(max(a.hole_d, lo), hi) if mount != "none" else a.hole_d
+    if mount != "none" and abs(hole_d - a.hole_d) > 1e-6:
+        print(f"   ! отверстие {a.hole_d} мм для такого брелока не годится, "
+              f"беру {hole_d:.1f} мм (допустимо {lo:.1f}…{hi:.1f})")
     d = Design(number=number, region=region, length=a.length, base_h=a.base_h,
-               text_h=a.text_h, hole_d=a.hole_d, back_text=back_text,
-               back_depth=a.back_depth, with_hole=not a.no_hole,
-               with_rus=not a.no_rus)
+               text_h=a.text_h, hole_d=hole_d, back_text=back_text,
+               back_depth=a.back_depth, with_hole=mount != "none",
+               mount=mount, ear_wall=a.ear_wall, with_rus=not a.no_rus)
     build(d)
     base, text = make_meshes(d)
     tag = tag_of(number, region)
@@ -847,7 +853,9 @@ def make_variant(number: str, region: str, back_text: str, a, outdir: str):
     i = d.info
     n_base = int(round(d.base_h / a.layer_h))
     print(f"\n── {number} {region} → {os.path.relpath(outdir, HERE)}/")
-    print(f"   габарит       : {a.length:g} × {i['H']:.2f} × {d.base_h + d.text_h:g} мм")
+    print(f"   габарит       : {i['total_length']:.2f} × {i['H']:.2f} × "
+          f"{d.base_h + d.text_h:g} мм" +
+          (f" (пластина {a.length:g} + ушко)" if i["mount"] == "ear" else ""))
     print(f"   цифры / буквы : {i['digit_h']:.2f} / {i['letter_h']:.2f} мм "
           f"(масштаб текста {i['scale']*100:.0f}%)")
     print(f"   отверстие     : Ø{d.hole_d} мм" if i['hole'] else "   отверстие     : нет")
@@ -875,6 +883,11 @@ def main():
     ap.add_argument("--base-h", type=float, default=2.4, help="толщина белой подложки, мм")
     ap.add_argument("--text-h", type=float, default=0.6, help="высота чёрного рельефа, мм")
     ap.add_argument("--hole-d", type=float, default=4.0, help="диаметр отверстия, мм")
+    ap.add_argument("--mount", choices=("hole", "ear", "none"), default="hole",
+                    help="крепление: hole — отверстие в пластине, "
+                         "ear — ушко-колечко сбоку (под толстый карабин), none — без него")
+    ap.add_argument("--ear-wall", type=float, default=2.2,
+                    help="толщина стенки ушка, мм (только для --mount ear)")
     ap.add_argument("--back-depth", type=float, default=0.4,
                     help="глубина гравировки на обороте, мм (кратна высоте слоя)")
     ap.add_argument("--no-hole", action="store_true")
