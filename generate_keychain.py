@@ -119,6 +119,10 @@ class Font:
     def has(self, ch: str) -> bool:
         return ord(ch) in self.cmap
 
+    def advance(self, ch: str) -> float:
+        gname = self.cmap.get(ord(ch))
+        return self.gs[gname].width if gname else 0.5 * self.upem
+
     def glyph(self, ch: str) -> Polygon:
         """Полигон глифа в единицах em (базовая линия y=0, начало пера x=0)."""
         gname = self.cmap[ord(ch)]
@@ -129,20 +133,40 @@ class Font:
             p = Polygon(c)
             if not p.is_valid:
                 p = p.buffer(0)
-            if not p.is_empty and p.area > 0:
-                rings.append(p)
+            if p.is_empty or p.area <= 0:
+                continue
+            # знаковая площадь исходного контура = направление обхода;
+            # в TrueType тело и счётчик («дырка») всегда идут в разные стороны
+            sa = 0.5 * sum(c[i][0] * c[(i + 1) % len(c)][1] -
+                           c[(i + 1) % len(c)][0] * c[i][1] for i in range(len(c)))
+            rings.append((p.area, math.copysign(1, sa), p))
         if not rings:
             raise ValueError(f"нет контура для {ch!r}")
-        # вложенность: чётная глубина — тело, нечётная — дырка
-        shells, holes = [], []
-        for i, r in enumerate(rings):
-            pt = r.representative_point()
-            depth = sum(1 for j, o in enumerate(rings) if j != i and o.contains(pt))
-            (holes if depth % 2 else shells).append(r)
-        geom = unary_union(shells)
-        if holes:
-            geom = geom.difference(unary_union(holes))
+        # идём от самого большого контура к мелким: сонаправленный с внешним —
+        # добавляем, встречный — вычитаем. Так корректно ложатся и «о», и «8»,
+        # и островок внутри дырки, и перекрывающиеся контуры составных глифов.
+        rings.sort(key=lambda t: -t[0])
+        body = rings[0][1]
+        geom = Polygon()
+        for _, sign, p in rings:
+            geom = geom.union(p) if sign == body else geom.difference(p)
         return geom
+
+    def line(self, text: str, cap_h: float, tracking: float = 0.04):
+        """Обычная строка текста: раскладка по ширинам глифов, базовая линия y=0."""
+        ref = self.glyph("M").bounds[3] / self.upem
+        k = cap_h / (ref * self.upem)
+        parts, x = [], 0.0
+        for ch in text:
+            if ch.strip() and self.has(ch):
+                try:
+                    parts.append(affinity.translate(
+                        affinity.scale(self.glyph(ch), k, k, origin=(0, 0)), x, 0))
+                except ValueError:
+                    pass
+            x += self.advance(ch) * k + tracking * cap_h
+        geom = unary_union(parts)
+        return affinity.translate(geom, -geom.bounds[0], 0)
 
 
 @dataclass
@@ -184,18 +208,22 @@ def ellipse_rect(x0, y0, x1, y1, rx, ry) -> Polygon:
 class Design:
     number: str = "Р788РК"
     region: str = "126"
-    length: float = 85.0
+    length: float = 60.0
     base_h: float = 2.4
     text_h: float = 0.6
-    hole_d: float = 3.5
+    hole_d: float = 4.0
+    back_text: str = "Москвич 3"
+    back_depth: float = 0.4   # глубина гравировки на обороте (кратна слою!)
     with_hole: bool = True
     with_frame: bool = True
     with_rus: bool = True
     min_stroke: float = 0.8   # минимальная толщина чёрных элементов, мм
+    min_rus_h: float = 2.6    # мельче надпись RUS печатать уже нет смысла
 
     # заполняется в build()
     plate: Polygon = field(default=None, repr=False)
     ink: object = field(default=None, repr=False)
+    back: object = field(default=None, repr=False)
     info: dict = field(default_factory=dict, repr=False)
 
 
@@ -263,7 +291,7 @@ def build(d: Design) -> Design:
             total += p.ink_w
         return items, total
 
-    avail = (main_x1 - main_x0) - 2 * G_MARGIN_MIN * S
+    avail = (main_x1 - main_x0) - 2 * max(G_MARGIN_MIN * S, 1.2)
     scale = 1.0
     items, total = layout_main(scale)
     if total > avail:
@@ -277,7 +305,7 @@ def build(d: Design) -> Design:
     # ── код региона + RUS ────────────────────────────────────────────────────
     if has_region:
         rx0, rx1 = div_x, inner_x1
-        rus_h = G_RUS_H * S if d.with_rus else 0.0
+        rus_h = max(G_RUS_H * S, d.min_rus_h) if d.with_rus else 0.0
         # цифры региона: при необходимости ужимаем, чтобы влезли 3 знака
         def layout_region(scale: float):
             cap = G_REGION_DIGIT_H * S * scale
@@ -290,7 +318,7 @@ def build(d: Design) -> Design:
                 total += p.ink_w
             return items, total
 
-        avail_r = (rx1 - rx0) - 2 * (G_REGION_MARGIN * S)
+        avail_r = (rx1 - rx0) - 2 * max(G_REGION_MARGIN * S, 1.0)
         rs = 1.0
         ritems, rtotal = layout_region(rs)
         if rtotal > avail_r:
@@ -320,21 +348,49 @@ def build(d: Design) -> Design:
 
     ink = ink.intersection(plate)
 
-    d.plate, d.ink = plate, ink
+    # ── гравировка на обороте (печатается на столе, поэтому зеркалим) ────────
+    back, back_cap = None, 0.0
+    if d.back_text.strip():
+        bx0 = (hole_cx + hole_r + 1.5) if d.with_hole else 2.0
+        bx1 = d.length - 2.0
+        box_w, box_h = bx1 - bx0, H - 2 * 1.8
+        g = dejavu().line(d.back_text, 5.0)
+        gw = g.bounds[2] - g.bounds[0]
+        gh = g.bounds[3] - g.bounds[1]
+        back_cap = 5.0 * min(box_w / gw, box_h / gh, 1.0)
+        g = dejavu().line(d.back_text, back_cap)
+        g = affinity.scale(g, 1, -1, origin=(0, 0))          # зеркало: смотрим снизу
+        mnx, mny, mxx, mxy = g.bounds
+        back = affinity.translate(g, bx0 + (box_w - (mxx - mnx)) / 2 - mnx,
+                                  H / 2 - (mny + mxy) / 2)
+        back = back.intersection(plate.buffer(-1.0))
+
+    d.plate, d.ink, d.back = plate, ink, back
     d.info = dict(S=S, H=H, frame_w=frame_w, scale=scale,
                   digit_h=G_DIGIT_H * S * scale,
                   letter_h=G_DIGIT_H * S * scale * let_ref / dig_ref,
                   hole=(hole_cx, hole_cy, d.hole_d) if d.with_hole else None,
-                  corner=corner)
+                  corner=corner, back_cap=back_cap)
     return d
+
+
+_DEJAVU = None
+
+
+def dejavu() -> Font:
+    """DejaVu Sans Bold (идёт вместе с matplotlib) — для RUS и надписи на обороте:
+    в шрифте госномеров нет ни латиницы R/U/S, ни строчной кириллицы."""
+    global _DEJAVU
+    if _DEJAVU is None:
+        import matplotlib
+        _DEJAVU = Font(os.path.join(os.path.dirname(matplotlib.__file__),
+                                    "mpl-data", "fonts", "ttf", "DejaVuSans-Bold.ttf"))
+    return _DEJAVU
 
 
 def rus_geometry(cap_h: float):
     """Надпись RUS шрифтом DejaVu Sans Bold (в шрифте номеров нет латиницы R/U/S)."""
-    import matplotlib
-    path = os.path.join(os.path.dirname(matplotlib.__file__),
-                        "mpl-data", "fonts", "ttf", "DejaVuSans-Bold.ttf")
-    f = Font(path)
+    f = dejavu()
     ref = f.glyph("R").bounds[3] / f.upem
     parts, x = [], 0.0
     for i, ch in enumerate("RUS"):
@@ -356,6 +412,14 @@ def extrude(geom, height: float, z: float = 0.0) -> trimesh.Trimesh:
         if p.is_empty or p.area < 1e-9:
             continue
         m = trimesh.creation.extrude_polygon(p, height)
+        if not m.is_watertight:
+            # триангуляция спотыкается о почти совпадающие точки после buffer():
+            # чистим их (допуск 1 мкм — на порядки меньше сопла)
+            for fix in (p.simplify(0.001), p.buffer(0.0005).buffer(-0.0005)):
+                cand = trimesh.creation.extrude_polygon(fix, height)
+                if cand.is_watertight:
+                    m = cand
+                    break
         meshes.append(m)
     mesh = trimesh.util.concatenate(meshes)
     if z:
@@ -650,10 +714,14 @@ def main():
     ap = argparse.ArgumentParser(description="Брелок-номер РФ для двухцветной печати")
     ap.add_argument("--number", default="Р788РК", help="серия и номер, например Р788РК")
     ap.add_argument("--region", default="126", help="код региона, например 126")
-    ap.add_argument("--length", type=float, default=85.0, help="длина брелка, мм")
+    ap.add_argument("--length", type=float, default=60.0, help="длина брелка, мм")
     ap.add_argument("--base-h", type=float, default=2.4, help="толщина белой подложки, мм")
     ap.add_argument("--text-h", type=float, default=0.6, help="высота чёрного рельефа, мм")
-    ap.add_argument("--hole-d", type=float, default=3.5, help="диаметр отверстия, мм")
+    ap.add_argument("--hole-d", type=float, default=4.0, help="диаметр отверстия, мм")
+    ap.add_argument("--back-text", default="Москвич 3",
+                    help="надпись, вдавленная в обратную сторону ('' — без неё)")
+    ap.add_argument("--back-depth", type=float, default=0.4,
+                    help="глубина гравировки на обороте, мм (кратна высоте слоя)")
     ap.add_argument("--no-hole", action="store_true")
     ap.add_argument("--no-rus", action="store_true")
     ap.add_argument("--layer-h", type=float, default=0.2, help="высота слоя для расчёта паузы")
@@ -661,7 +729,8 @@ def main():
     a = ap.parse_args()
 
     d = Design(number=a.number, region=a.region, length=a.length, base_h=a.base_h,
-               text_h=a.text_h, hole_d=a.hole_d, with_hole=not a.no_hole,
+               text_h=a.text_h, hole_d=a.hole_d, back_text=a.back_text,
+               back_depth=a.back_depth, with_hole=not a.no_hole,
                with_rus=not a.no_rus)
     build(d)
 
@@ -669,6 +738,12 @@ def main():
     os.makedirs(os.path.join(a.out, "stl"), exist_ok=True)
 
     base = extrude(d.plate, d.base_h)
+    if d.back is not None and not d.back.is_empty:
+        cutter = extrude(d.back, d.back_depth + 0.2, z=-0.2)   # с запасом вниз
+        try:
+            base = trimesh.boolean.difference([base, cutter], engine="manifold")
+        except Exception as e:
+            print("!! не удалось вырезать гравировку:", e)
     text = extrude(d.ink, d.text_h, z=d.base_h)
     # центрируем по XY (Bambu Studio ставит объект в центр стола)
     cx, cy = d.length / 2, d.info["H"] / 2
@@ -703,6 +778,12 @@ def main():
     preview_3d([(base, (0.95, 0.95, 0.96)), (text, (0.11, 0.11, 0.13))],
                os.path.join(a.out, "preview_3d.png"))
     preview_pause(d, os.path.join(a.out, "preview_sloy_pauzy.png"), a.layer_h)
+    # вид на оборот: не двигаем камеру, а честно переворачиваем брелок
+    # через длинную ось — ровно так его перевернёт рука, держащая за колечко
+    flip = trimesh.transformations.rotation_matrix(math.pi, [1, 0, 0])
+    preview_3d([(base.copy().apply_transform(flip), (0.95, 0.95, 0.96)),
+                (text.copy().apply_transform(flip), (0.11, 0.11, 0.13))],
+               os.path.join(a.out, "preview_3d_oborot.png"))
 
     i = d.info
     print(f"номер           : {a.number} {a.region}")
@@ -710,7 +791,9 @@ def main():
     print(f"цифры / буквы   : {i['digit_h']:.2f} / {i['letter_h']:.2f} мм "
           f"(масштаб текста {i['scale']*100:.0f}%)")
     print(f"рамка           : {i['frame_w']:.2f} мм")
-    print(f"отверстие       : {i['hole']}")
+    print(f"отверстие       : Ø{d.hole_d} мм, центр x={i['hole'][0]:.2f} мм" if i['hole'] else "отверстие       : нет")
+    print(f"оборот          : «{d.back_text}», высота букв {i['back_cap']:.2f} мм, "
+          f"глубина {d.back_depth} мм ({d.back_depth/a.layer_h:.0f} слоя), зеркально")
     n_base = int(round(d.base_h / a.layer_h))
     print(f"подложка        : 0 .. {d.base_h} мм  = {n_base} слоёв по {a.layer_h}")
     print(f"чёрный рельеф   : {d.base_h} .. {d.base_h + d.text_h} мм = "
