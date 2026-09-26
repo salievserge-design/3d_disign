@@ -33,6 +33,8 @@ from shapely.geometry import Polygon, box
 from shapely.ops import unary_union
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+WHITE = (0.95, 0.95, 0.96)   # цвета превью: белый пластик / чёрный пластик
+BLACK = (0.11, 0.11, 0.13)
 FONT_PLATE = os.path.join(HERE, "fonts", "RoadNumbers2.0.ttf")
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -456,11 +458,19 @@ def _mesh_xml(mesh: trimesh.Trimesh) -> str:
     return "".join(out)
 
 
-def write_3mf(path: str, parts: list[tuple[str, trimesh.Trimesh, int]],
-              obj_name: str, plate_xy=(128.0, 128.0), pause_z: float | None = None):
-    """parts: [(имя, меш, номер филамента)]; меш уже в координатах модели (центр XY = 0)."""
-    ids = list(range(1, len(parts) + 1))
-    top_id = len(parts) + 1
+def write_3mf(path: str, objects, plate_xy=(128.0, 128.0), pause_z: float | None = None):
+    """objects: [(имя объекта, [(имя части, меш, филамент), ...], (dx, dy))].
+    Меши в координатах модели (центр XY = 0), dx/dy — сдвиг от центра стола."""
+    if isinstance(objects, tuple):
+        objects = [objects]
+
+    # раздаём id: сначала детали каждого объекта, потом сам объект-контейнер
+    plan, next_id = [], 1
+    for name, parts, off in objects:
+        part_ids = list(range(next_id, next_id + len(parts)))
+        next_id += len(parts)
+        plan.append((name, parts, off, part_ids, next_id))
+        next_id += 1
 
     m = ['<?xml version="1.0" encoding="UTF-8"?>\n',
          '<model unit="millimeter" xml:lang="en-US" '
@@ -469,40 +479,48 @@ def write_3mf(path: str, parts: list[tuple[str, trimesh.Trimesh, int]],
          ' <metadata name="Application">brelok-generator</metadata>\n',
          ' <metadata name="BambuStudio:3mfVersion">1</metadata>\n',
          ' <resources>\n']
-    for (name, mesh, _), oid in zip(parts, ids):
-        m.append(f'  <object id="{oid}" type="model">\n')
-        m.append(_mesh_xml(mesh))
-        m.append('  </object>\n')
-    m.append(f'  <object id="{top_id}" type="model">\n   <components>\n')
-    for oid in ids:
-        m.append(f'    <component objectid="{oid}" transform="1 0 0 0 1 0 0 0 1 0 0 0"/>\n')
-    m.append('   </components>\n  </object>\n </resources>\n <build>\n')
-    m.append(f'  <item objectid="{top_id}" '
-             f'transform="1 0 0 0 1 0 0 0 1 {plate_xy[0]:.4f} {plate_xy[1]:.4f} 0" '
-             f'printable="1"/>\n </build>\n</model>\n')
+    for name, parts, off, part_ids, top_id in plan:
+        for (pname, mesh, _), oid in zip(parts, part_ids):
+            m.append(f'  <object id="{oid}" type="model">\n')
+            m.append(_mesh_xml(mesh))
+            m.append('  </object>\n')
+        m.append(f'  <object id="{top_id}" type="model">\n   <components>\n')
+        for oid in part_ids:
+            m.append(f'    <component objectid="{oid}" transform="1 0 0 0 1 0 0 0 1 0 0 0"/>\n')
+        m.append('   </components>\n  </object>\n')
+    m.append(' </resources>\n <build>\n')
+    for name, parts, off, part_ids, top_id in plan:
+        x, y = plate_xy[0] + off[0], plate_xy[1] + off[1]
+        m.append(f'  <item objectid="{top_id}" '
+                 f'transform="1 0 0 0 1 0 0 0 1 {x:.4f} {y:.4f} 0" printable="1"/>\n')
+    m.append(' </build>\n</model>\n')
     model_xml = "".join(m)
 
-    cfg = ['<?xml version="1.0" encoding="UTF-8"?>\n<config>\n',
-           f'  <object id="{top_id}">\n',
-           f'    <metadata key="name" value="{obj_name}"/>\n',
-           '    <metadata key="extruder" value="1"/>\n']
-    for (name, mesh, ext), oid in zip(parts, ids):
-        cfg.append(f'    <part id="{oid}" subtype="normal_part">\n')
-        cfg.append(f'      <metadata key="name" value="{name}"/>\n')
-        cfg.append('      <metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/>\n')
-        cfg.append(f'      <metadata key="extruder" value="{ext}"/>\n')
-        cfg.append('      <mesh_stat edges_fixed="0" degenerate_facets="0" facets_removed="0"'
-                   ' facets_reversed="0" backwards_edges="0"/>\n')
-        cfg.append('    </part>\n')
-    cfg.append('  </object>\n  <plate>\n    <metadata key="plater_id" value="1"/>\n')
+    cfg = ['<?xml version="1.0" encoding="UTF-8"?>\n<config>\n']
+    for name, parts, off, part_ids, top_id in plan:
+        cfg.append(f'  <object id="{top_id}">\n')
+        cfg.append(f'    <metadata key="name" value="{name}"/>\n')
+        cfg.append('    <metadata key="extruder" value="1"/>\n')
+        for (pname, mesh, ext), oid in zip(parts, part_ids):
+            cfg.append(f'    <part id="{oid}" subtype="normal_part">\n')
+            cfg.append(f'      <metadata key="name" value="{pname}"/>\n')
+            cfg.append('      <metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/>\n')
+            cfg.append(f'      <metadata key="extruder" value="{ext}"/>\n')
+            cfg.append('      <mesh_stat edges_fixed="0" degenerate_facets="0" facets_removed="0"'
+                       ' facets_reversed="0" backwards_edges="0"/>\n')
+            cfg.append('    </part>\n')
+        cfg.append('  </object>\n')
+    cfg.append('  <plate>\n    <metadata key="plater_id" value="1"/>\n')
     cfg.append('    <metadata key="plater_name" value=""/>\n')
     cfg.append('    <metadata key="locked" value="false"/>\n')
-    cfg.append(f'    <model_instance>\n      <metadata key="object_id" value="{top_id}"/>\n')
-    cfg.append('      <metadata key="instance_id" value="0"/>\n    </model_instance>\n')
+    for name, parts, off, part_ids, top_id in plan:
+        cfg.append(f'    <model_instance>\n      <metadata key="object_id" value="{top_id}"/>\n')
+        cfg.append('      <metadata key="instance_id" value="0"/>\n    </model_instance>\n')
     cfg.append('  </plate>\n  <assemble>\n')
-    cfg.append(f'   <assemble_item object_id="{top_id}" instance_id="0" '
-               f'transform="1 0 0 0 1 0 0 0 1 {plate_xy[0]:.4f} {plate_xy[1]:.4f} 0" '
-               'offset="0 0 0"/>\n')
+    for name, parts, off, part_ids, top_id in plan:
+        x, y = plate_xy[0] + off[0], plate_xy[1] + off[1]
+        cfg.append(f'   <assemble_item object_id="{top_id}" instance_id="0" '
+                   f'transform="1 0 0 0 1 0 0 0 1 {x:.4f} {y:.4f} 0" offset="0 0 0"/>\n')
     cfg.append('  </assemble>\n</config>\n')
     cfg_xml = "".join(cfg)
 
@@ -710,33 +728,8 @@ def preview_3d(meshes_colors, path: str, w=1700, h=780, elev=27.0, azim=-48.0, s
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-def main():
-    ap = argparse.ArgumentParser(description="Брелок-номер РФ для двухцветной печати")
-    ap.add_argument("--number", default="Р788РК", help="серия и номер, например Р788РК")
-    ap.add_argument("--region", default="126", help="код региона, например 126")
-    ap.add_argument("--length", type=float, default=60.0, help="длина брелка, мм")
-    ap.add_argument("--base-h", type=float, default=2.4, help="толщина белой подложки, мм")
-    ap.add_argument("--text-h", type=float, default=0.6, help="высота чёрного рельефа, мм")
-    ap.add_argument("--hole-d", type=float, default=4.0, help="диаметр отверстия, мм")
-    ap.add_argument("--back-text", default="Москвич 3",
-                    help="надпись, вдавленная в обратную сторону ('' — без неё)")
-    ap.add_argument("--back-depth", type=float, default=0.4,
-                    help="глубина гравировки на обороте, мм (кратна высоте слоя)")
-    ap.add_argument("--no-hole", action="store_true")
-    ap.add_argument("--no-rus", action="store_true")
-    ap.add_argument("--layer-h", type=float, default=0.2, help="высота слоя для расчёта паузы")
-    ap.add_argument("--out", default=os.path.join(HERE, "out"))
-    a = ap.parse_args()
-
-    d = Design(number=a.number, region=a.region, length=a.length, base_h=a.base_h,
-               text_h=a.text_h, hole_d=a.hole_d, back_text=a.back_text,
-               back_depth=a.back_depth, with_hole=not a.no_hole,
-               with_rus=not a.no_rus)
-    build(d)
-
-    os.makedirs(a.out, exist_ok=True)
-    os.makedirs(os.path.join(a.out, "stl"), exist_ok=True)
-
+def make_meshes(d: Design):
+    """Подложка (с вырезанной гравировкой) и чёрный рельеф, отцентрованные по XY."""
     base = extrude(d.plate, d.base_h)
     if d.back is not None and not d.back.is_empty:
         cutter = extrude(d.back, d.back_depth + 0.2, z=-0.2)   # с запасом вниз
@@ -745,64 +738,131 @@ def main():
         except Exception as e:
             print("!! не удалось вырезать гравировку:", e)
     text = extrude(d.ink, d.text_h, z=d.base_h)
-    # центрируем по XY (Bambu Studio ставит объект в центр стола)
     cx, cy = d.length / 2, d.info["H"] / 2
     for m in (base, text):
         m.apply_translation([-cx, -cy, 0])
+    return base, text
 
-    tag = (a.number + "_" + a.region).upper()
-    trans = str.maketrans("АВЕКМНОРСТУХ", "ABEKMHOPCTYX")
-    tag = tag.translate(trans)
 
-    # цельная модель одним телом (для варианта «один STL + пауза»)
+def tag_of(number: str, region: str) -> str:
+    """Имя файла латиницей: Р788РК 126 → P788PK_126."""
+    return (number + "_" + region).upper().translate(
+        str.maketrans("АВЕКМНОРСТУХ", "ABEKMHOPCTYX"))
+
+
+def make_variant(number: str, region: str, back_text: str, a, outdir: str):
+    d = Design(number=number, region=region, length=a.length, base_h=a.base_h,
+               text_h=a.text_h, hole_d=a.hole_d, back_text=back_text,
+               back_depth=a.back_depth, with_hole=not a.no_hole,
+               with_rus=not a.no_rus)
+    build(d)
+    base, text = make_meshes(d)
+    tag = tag_of(number, region)
+
+    os.makedirs(os.path.join(outdir, "stl"), exist_ok=True)
     try:
         whole = trimesh.boolean.union([base, text], engine="manifold")
     except Exception:
         whole = trimesh.util.concatenate([base, text])
-
-    stl_dir = os.path.join(a.out, "stl")
+    stl_dir = os.path.join(outdir, "stl")
     base.export(os.path.join(stl_dir, f"{tag}_1_podlozhka_BELAYA.stl"))
     text.export(os.path.join(stl_dir, f"{tag}_2_bukvy_CHERNYE.stl"))
     whole.export(os.path.join(stl_dir, f"{tag}_brelok_celikom.stl"))
 
-    parts = [("1. Подложка — БЕЛЫЙ пластик", base, 1),
-             ("2. Буквы и рамка — ЧЁРНЫЙ пластик", text, 2)]
-    parts1 = [("1. Подложка — БЕЛЫЙ пластик", base, 1),
-              ("2. Буквы и рамка — ЧЁРНЫЙ пластик", text, 1)]
-    name = f"Брелок {a.number} {a.region}"
-    write_3mf(os.path.join(a.out, f"brelok_{tag}_A1_bez_AMS.3mf"), parts1, name,
+    name = f"Брелок {number} {region}"
+    parts2 = [("1. Подложка — БЕЛЫЙ пластик", base, 1),
+              ("2. Буквы и рамка — ЧЁРНЫЙ пластик", text, 2)]
+    parts1 = [(p[0], p[1], 1) for p in parts2]
+    write_3mf(os.path.join(outdir, f"brelok_{tag}_A1_bez_AMS.3mf"), [(name, parts1, (0, 0))],
               pause_z=round(d.base_h + a.layer_h, 3))
-    write_3mf(os.path.join(a.out, f"brelok_{tag}_2_filamenta.3mf"), parts, name)
+    write_3mf(os.path.join(outdir, f"brelok_{tag}_2_filamenta.3mf"), [(name, parts2, (0, 0))])
 
-    preview_top(d, os.path.join(a.out, "preview_vid_sverhu.png"))
-    preview_3d([(base, (0.95, 0.95, 0.96)), (text, (0.11, 0.11, 0.13))],
-               os.path.join(a.out, "preview_3d.png"))
-    preview_pause(d, os.path.join(a.out, "preview_sloy_pauzy.png"), a.layer_h)
-    # вид на оборот: не двигаем камеру, а честно переворачиваем брелок
-    # через длинную ось — ровно так его перевернёт рука, держащая за колечко
+    preview_top(d, os.path.join(outdir, "preview_vid_sverhu.png"))
+    preview_3d([(base, WHITE), (text, BLACK)], os.path.join(outdir, "preview_3d.png"))
+    preview_pause(d, os.path.join(outdir, "preview_sloy_pauzy.png"), a.layer_h)
+    # вид на оборот: не двигаем камеру, а честно переворачиваем брелок через
+    # длинную ось — ровно так его перевернёт рука, держащая за колечко
     flip = trimesh.transformations.rotation_matrix(math.pi, [1, 0, 0])
-    preview_3d([(base.copy().apply_transform(flip), (0.95, 0.95, 0.96)),
-                (text.copy().apply_transform(flip), (0.11, 0.11, 0.13))],
-               os.path.join(a.out, "preview_3d_oborot.png"))
+    preview_3d([(base.copy().apply_transform(flip), WHITE),
+                (text.copy().apply_transform(flip), BLACK)],
+               os.path.join(outdir, "preview_3d_oborot.png"))
 
     i = d.info
-    print(f"номер           : {a.number} {a.region}")
-    print(f"габарит         : {a.length:g} × {i['H']:.2f} × {d.base_h + d.text_h:g} мм")
-    print(f"цифры / буквы   : {i['digit_h']:.2f} / {i['letter_h']:.2f} мм "
-          f"(масштаб текста {i['scale']*100:.0f}%)")
-    print(f"рамка           : {i['frame_w']:.2f} мм")
-    print(f"отверстие       : Ø{d.hole_d} мм, центр x={i['hole'][0]:.2f} мм" if i['hole'] else "отверстие       : нет")
-    print(f"оборот          : «{d.back_text}», высота букв {i['back_cap']:.2f} мм, "
-          f"глубина {d.back_depth} мм ({d.back_depth/a.layer_h:.0f} слоя), зеркально")
     n_base = int(round(d.base_h / a.layer_h))
-    print(f"подложка        : 0 .. {d.base_h} мм  = {n_base} слоёв по {a.layer_h}")
-    print(f"чёрный рельеф   : {d.base_h} .. {d.base_h + d.text_h} мм = "
-          f"{d.text_h / a.layer_h:.0f} слоя")
-    print(f"ПАУЗА           : перед слоем {n_base + 1} (Z = {d.base_h + a.layer_h:.2f} мм) — "
-          f"ставится вручную в Bambu Studio: «+» → Add Pause")
-    print(f"треугольников   : подложка {len(base.faces)}, текст {len(text.faces)}")
-    print(f"герметичность   : подложка {base.is_watertight}, текст {text.is_watertight}")
-    print(f"объём           : {(base.volume + text.volume)/1000:.2f} см³")
+    print(f"\n── {number} {region} → {os.path.relpath(outdir, HERE)}/")
+    print(f"   габарит       : {a.length:g} × {i['H']:.2f} × {d.base_h + d.text_h:g} мм")
+    print(f"   цифры / буквы : {i['digit_h']:.2f} / {i['letter_h']:.2f} мм "
+          f"(масштаб текста {i['scale']*100:.0f}%)")
+    print(f"   отверстие     : Ø{d.hole_d} мм" if i['hole'] else "   отверстие     : нет")
+    if back_text.strip():
+        print(f"   оборот        : «{back_text}», буквы {i['back_cap']:.2f} мм, "
+              f"глубина {d.back_depth} мм ({d.back_depth / a.layer_h:.0f} слоя), зеркально")
+    print(f"   подложка      : 0 .. {d.base_h} мм = {n_base} слоёв по {a.layer_h}")
+    print(f"   ПАУЗА         : перед слоем {n_base + 1} (Z = {d.base_h + a.layer_h:.2f} мм)")
+    print(f"   герметичность : подложка {base.is_watertight}, текст {text.is_watertight}")
+    print(f"   объём         : {(base.volume + text.volume) / 1000:.2f} см³ "
+          f"≈ {(base.volume + text.volume) / 1000 * 1.24:.1f} г PLA")
+    return dict(d=d, base=base, text=text, tag=tag, name=name, parts1=parts1, parts2=parts2)
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Брелок-номер РФ для двухцветной печати")
+    ap.add_argument("--brelok", action="append", metavar='"НОМЕР РЕГИОН НАДПИСЬ"',
+                    help="брелок: номер, регион и надпись на обороте через пробел. "
+                         "Ключ можно повторить — тогда будет ещё и общий стол")
+    ap.add_argument("--number", default="Р788РК", help="серия и номер, например Р788РК")
+    ap.add_argument("--region", default="126", help="код региона, например 126")
+    ap.add_argument("--back-text", default="Москвич 3",
+                    help="надпись, вдавленная в обратную сторону ('' — без неё)")
+    ap.add_argument("--length", type=float, default=60.0, help="длина брелка, мм")
+    ap.add_argument("--base-h", type=float, default=2.4, help="толщина белой подложки, мм")
+    ap.add_argument("--text-h", type=float, default=0.6, help="высота чёрного рельефа, мм")
+    ap.add_argument("--hole-d", type=float, default=4.0, help="диаметр отверстия, мм")
+    ap.add_argument("--back-depth", type=float, default=0.4,
+                    help="глубина гравировки на обороте, мм (кратна высоте слоя)")
+    ap.add_argument("--no-hole", action="store_true")
+    ap.add_argument("--no-rus", action="store_true")
+    ap.add_argument("--layer-h", type=float, default=0.2, help="высота слоя для расчёта паузы")
+    ap.add_argument("--gap", type=float, default=7.0, help="зазор между брелоками на столе, мм")
+    ap.add_argument("--out", default=os.path.join(HERE, "out"))
+    a = ap.parse_args()
+
+    specs = []
+    for s in (a.brelok or []):
+        w = s.split()
+        if len(w) < 2:
+            ap.error(f"--brelok {s!r}: нужно как минимум «НОМЕР РЕГИОН»")
+        specs.append((w[0], w[1], " ".join(w[2:])))
+    if not specs:
+        specs = [(a.number, a.region, a.back_text)]
+
+    os.makedirs(a.out, exist_ok=True)
+    made = [make_variant(n, r, b, a, os.path.join(a.out, tag_of(n, r))) for n, r, b in specs]
+
+    if len(made) > 1:
+        # все брелоки на одном столе: высота подложки у них одинаковая,
+        # поэтому одной паузы хватает на всю пластину
+        step = max(v["d"].info["H"] for v in made) + a.gap
+        y0 = -step * (len(made) - 1) / 2
+        objs1, objs2, scene = [], [], []
+        for k, v in enumerate(made):
+            dy = y0 + k * step
+            objs1.append((v["name"], v["parts1"], (0.0, dy)))
+            objs2.append((v["name"], v["parts2"], (0.0, dy)))
+            scene += [(v["base"].copy().apply_translation([0, dy, 0]), WHITE),
+                      (v["text"].copy().apply_translation([0, dy, 0]), BLACK)]
+        d0 = made[0]["d"]
+        write_3mf(os.path.join(a.out, "vse_brelki_odin_stol_A1_bez_AMS.3mf"), objs1,
+                  pause_z=round(d0.base_h + a.layer_h, 3))
+        write_3mf(os.path.join(a.out, "vse_brelki_odin_stol_2_filamenta.3mf"), objs2)
+        preview_3d(scene, os.path.join(a.out, "preview_vse_brelki.png"),
+                   h=460 + 300 * len(made), elev=34.0)
+        print(f"\n── общий стол: {len(made)} брелока, шаг {step:.1f} мм → "
+              f"{os.path.relpath(a.out, HERE)}/vse_brelki_odin_stol_A1_bez_AMS.3mf")
+        print(f"   печатаются одновременно, смена филамента одна на оба "
+              f"(слой {int(round(d0.base_h / a.layer_h)) + 1})")
+        print(f"   всего пластика: "
+              f"{sum(v['base'].volume + v['text'].volume for v in made) / 1000 * 1.24:.1f} г")
 
 
 if __name__ == "__main__":
