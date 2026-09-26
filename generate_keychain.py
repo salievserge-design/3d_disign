@@ -507,6 +507,51 @@ def _box_blur(a: np.ndarray, r: int) -> np.ndarray:
     return out / (k * k)
 
 
+def preview_pause(d: Design, path: str, layer_h: float):
+    """Шпаргалка: как выглядит предпросмотр Bambu Studio на слое до и после паузы."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import PathPatch
+    from matplotlib.path import Path as MPath
+
+    def patch(geom, **kw):
+        polys = [geom] if geom.geom_type == "Polygon" else list(geom.geoms)
+        verts, codes = [], []
+        for p in polys:
+            for ring in [p.exterior, *p.interiors]:
+                c = np.asarray(ring.coords)
+                verts.extend(c)
+                codes.extend([MPath.MOVETO] + [MPath.LINETO] * (len(c) - 2) + [MPath.CLOSEPOLY])
+        return PathPatch(MPath(verts, codes), **kw)
+
+    n_base = int(round(d.base_h / layer_h))
+    W, H = d.length, d.info["H"]
+    fig, axes = plt.subplots(2, 1, figsize=(W / 9, 2 * (H + 16) / 9), dpi=200)
+    for ax, show_ink in zip(axes, (False, True)):
+        ax.add_patch(patch(d.plate, facecolor="#f4f5f7", edgecolor="#9aa0a6", lw=1.0, zorder=2))
+        if show_ink:
+            ax.add_patch(patch(d.ink, facecolor="#16181c", edgecolor="none", zorder=3))
+        ax.set_xlim(-2, W + 2)
+        ax.set_ylim(-11, H + 3)
+        ax.set_aspect("equal")
+        ax.axis("off")
+        if show_ink:
+            t1 = f"слой {n_base + 1}   ·   Z = {d.base_h + layer_h:.2f} мм   ·   ПОЯВИЛИСЬ БУКВЫ"
+            t2 = "◀  сюда ставим паузу (Add Pause)"
+            c1, c2 = "#0b6b2f", "#0b6b2f"
+        else:
+            t1 = f"слой {n_base}   ·   Z = {d.base_h:.2f} мм   ·   только белая пластина"
+            t2 = "рано — букв ещё нет"
+            c1, c2 = "#6b7280", "#9aa0a6"
+        ax.text(1, -4.5, t1, ha="left", va="center", fontsize=6.2, color=c1, weight="bold")
+        ax.text(W - 1, -4.5, t2, ha="right", va="center", fontsize=6.2, color=c2)
+    fig.patch.set_facecolor("#eef0f3")
+    fig.tight_layout(pad=0.5)
+    fig.savefig(path, facecolor=fig.get_facecolor())
+    plt.close(fig)
+
+
 def preview_3d(meshes_colors, path: str, w=1700, h=780, elev=27.0, azim=-48.0, ss=2):
     """Собственный растеризатор с Z-буфером: matplotlib неверно сортирует
     накладывающиеся треугольники и «топит» буквы в подложке."""
@@ -657,6 +702,7 @@ def main():
     preview_top(d, os.path.join(a.out, "preview_vid_sverhu.png"))
     preview_3d([(base, (0.95, 0.95, 0.96)), (text, (0.11, 0.11, 0.13))],
                os.path.join(a.out, "preview_3d.png"))
+    preview_pause(d, os.path.join(a.out, "preview_sloy_pauzy.png"), a.layer_h)
 
     i = d.info
     print(f"номер           : {a.number} {a.region}")
@@ -665,9 +711,12 @@ def main():
           f"(масштаб текста {i['scale']*100:.0f}%)")
     print(f"рамка           : {i['frame_w']:.2f} мм")
     print(f"отверстие       : {i['hole']}")
-    print(f"подложка        : 0 .. {d.base_h} мм  = {d.base_h / a.layer_h:.0f} слоёв по {a.layer_h}")
+    n_base = int(round(d.base_h / a.layer_h))
+    print(f"подложка        : 0 .. {d.base_h} мм  = {n_base} слоёв по {a.layer_h}")
     print(f"чёрный рельеф   : {d.base_h} .. {d.base_h + d.text_h} мм = "
           f"{d.text_h / a.layer_h:.0f} слоя")
+    print(f"ПАУЗА           : перед слоем {n_base + 1} (Z = {d.base_h + a.layer_h:.2f} мм) — "
+          f"ставится вручную в Bambu Studio: «+» → Add Pause")
     print(f"треугольников   : подложка {len(base.faces)}, текст {len(text.faces)}")
     print(f"герметичность   : подложка {base.is_watertight}, текст {text.is_watertight}")
     print(f"объём           : {(base.volume + text.volume)/1000:.2f} см³")
