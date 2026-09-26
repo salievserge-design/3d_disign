@@ -70,34 +70,60 @@ def wait_until_up(port: int, timeout: float = 25.0) -> bool:
     return False
 
 
-def selftest() -> int:
-    """Полный прогон: геометрия → превью → запись файлов. Только код возврата."""
-    from app import core
-    out = os.path.join(tempfile.mkdtemp(prefix="nomerok_"), "проверка")
-    specs = [core.Spec().clean(),
-             core.Spec(number="А123ВС", region="36", back_text="",
-                       mount="hole", hole_d=4.0).clean()]
-    d = core.design(specs[0])
-    svg, st = core.preview(d), core.stats(specs[0], d)
-    assert len(svg["front"]) > 2000 and len(svg["back"]) > 500, "пустое превью"
-    assert st["pause_layer"] == 13, f"неожиданный слой паузы: {st['pause_layer']}"
-    res = core.generate(specs, out, want_stl=True)
-    assert res["combined"], "общий стол не собрался"
-    assert len(res["files"]) >= 16, f"мало файлов: {len(res['files'])}"
-    for f in res["files"]:
-        assert os.path.getsize(f) > 0, f"пустой файл: {f}"
-    try:
-        import webview                                            # noqa: F401
-        log("pywebview: есть")
-    except Exception as e:
-        log(f"pywebview: НЕТ ({e}) — приложение откроется в браузере")
-    log(f"SELFTEST OK: {len(res['files'])} файлов, {res['grams']} г")
+def selftest(stage: int = 0) -> int:
+    """Проверка собранного exe по стадиям: так по номеру шага на CI видно,
+    что именно сломалось, даже не читая логов."""
+    if stage in (0, 1):
+        import numpy, shapely, trimesh, flask, fontTools          # noqa: F401
+        from app import core                                      # noqa: F401
+        import generate_keychain as g
+        log(f"[1] модули ок: numpy {numpy.__version__}, shapely {shapely.__version__}, "
+            f"trimesh {trimesh.__version__}, данные в {g.HERE}")
+        assert os.path.exists(os.path.join(g.HERE, "fonts", "RoadNumbers2.0.ttf")), "нет шрифта"
+
+    if stage in (0, 2):
+        from app import core
+        spec = core.Spec().clean()
+        d = core.design(spec)
+        svg, st = core.preview(d), core.stats(spec, d)
+        assert len(svg["front"]) > 2000 and len(svg["back"]) > 500, "пустое превью"
+        assert st["pause_layer"] == 13, f"неожиданный слой паузы: {st['pause_layer']}"
+        log(f"[2] геометрия ок: {st['size_x']}×{st['size_y']} мм, {st['grams']} г")
+
+    if stage in (0, 3):
+        from app import core
+        out = os.path.join(tempfile.mkdtemp(prefix="nomerok_"), "проверка")
+        specs = [core.Spec().clean(),
+                 core.Spec(number="А123ВС", region="36", back_text="",
+                           mount="hole", hole_d=4.0).clean()]
+        res = core.generate(specs, out, want_stl=True)
+        assert res["combined"], "общий стол не собрался"
+        assert len(res["files"]) >= 16, f"мало файлов: {len(res['files'])}"
+        for f in res["files"]:
+            assert os.path.getsize(f) > 0, f"пустой файл: {f}"
+        log(f"[3] файлы ок: {len(res['files'])} шт, {res['grams']} г")
+
+    if stage in (0, 4):
+        try:
+            import webview
+            log(f"[4] pywebview {getattr(webview, '__version__', '?')} на месте")
+        except Exception as e:
+            log(f"[4] pywebview недоступен ({type(e).__name__}: {e}) — "
+                f"приложение откроется в браузере")
+
+    log(f"SELFTEST OK (стадия {stage or 'все'})")
     return 0
 
 
 def main() -> int:
     if "--selftest" in sys.argv:
-        return selftest()
+        i = sys.argv.index("--selftest")
+        stage = int(sys.argv[i + 1]) if len(sys.argv) > i + 1 and sys.argv[i + 1].isdigit() else 0
+        code = selftest(stage)
+        # выходим жёстко: в собранном exe фоновые потоки (TBB у manifold3d и т.п.)
+        # могут держать процесс живым, а на CI это выглядит как зависание
+        sys.stderr.flush() if sys.stderr else None
+        os._exit(code)
 
     port = free_port()
     threading.Thread(target=server.run, kwargs=dict(host="127.0.0.1", port=port),
@@ -149,4 +175,4 @@ if __name__ == "__main__":
         message_box("НОМЕРОК 3D не смог запуститься.\n\n"
                     f"Технические подробности записаны в файл:\n{LOG}\n\n"
                     "Пришли этот файл — починим.")
-        raise SystemExit(1)
+        os._exit(1)
