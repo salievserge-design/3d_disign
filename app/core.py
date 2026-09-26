@@ -46,9 +46,9 @@ class Spec:
 
     def clean(self) -> "Spec":
         """Приводим ввод в чувство, не ругаясь на пользователя."""
-        self.number = "".join(ch for ch in self.number.upper() if not ch.isspace())[:9]
+        self.number = _clean_number(self.number) or "Р433ЕК"
         self.region = "".join(ch for ch in self.region if ch.isdigit())[:3]
-        self.back_text = " ".join(self.back_text.split())[:24]
+        self.back_text = _printable(" ".join(self.back_text.split())[:24])
         if self.mount not in MOUNTS:
             self.mount = "hole"
         self.length = _clamp(self.length, 40.0, 120.0)
@@ -70,6 +70,33 @@ class Spec:
 
 def _clamp(v: float, lo: float, hi: float) -> float:
     return round(min(max(float(v), lo), hi), 3)
+
+
+_LAT2CYR = str.maketrans("ABEKMHOPCTYX", LETTERS)
+
+
+def _clean_number(text: str) -> str:
+    """Оставляем только то, что бывает на номере: 12 букв и цифры.
+    Латинские двойники (ABEKMHOPCTYX) молча переводим в кириллицу."""
+    ok = LETTERS + DIGITS
+    return "".join(ch for ch in text.upper().translate(_LAT2CYR) if ch in ok)[:9]
+
+
+def _printable(text: str) -> str:
+    """Выкидываем символы, которых нет в шрифте (эмодзи и прочую экзотику),
+    иначе в гравировке останутся пустые места на их месте."""
+    f = gk.dejavu()
+    out = []
+    for ch in text:
+        if ch == " ":
+            out.append(ch)
+            continue
+        try:
+            if f.has(ch) and not f.glyph(ch).is_empty:
+                out.append(ch)
+        except Exception:
+            pass
+    return "".join(out).strip()
 
 
 def limits(length: float, mount: str) -> dict:

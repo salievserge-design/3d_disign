@@ -45,7 +45,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="НОМЕРОК 3D",
+    name="NOMEROK-3D",
     icon="app/icon.ico",
     debug=False,
     bootloader_ignore_signals=False,

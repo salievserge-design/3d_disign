@@ -15,7 +15,7 @@ echo   [2/3] Ставлю зависимости...
 echo   [3/3] Собираю exe (это займёт пару минут)...
 ".venv\Scripts\python.exe" -m PyInstaller --noconfirm --clean nomerok3d.spec || goto :err
 echo.
-echo   ГОТОВО: dist\НОМЕРОК 3D.exe
+echo   ГОТОВО: dist\NOMEROK-3D.exe
 echo.
 pause
 exit /b 0
