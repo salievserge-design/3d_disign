@@ -35,7 +35,9 @@ jobs:
       - name: Проверка исходников до сборки
         run: python -m app.main --selftest
 
-      - name: Сборка exe
+      - name: Сборка проверочного exe (с консолью)
+        env:
+          NOMEROK_CONSOLE: "1"
         run: pyinstaller --noconfirm --clean nomerok3d.spec
 
       # Самопроверка по стадиям: если что-то сломается, по названию упавшего
@@ -61,6 +63,23 @@ jobs:
         continue-on-error: true
         run: ./.github/run-stage.ps1 -Stage 4
 
+      - name: Сборка основного exe (оконного)
+        run: pyinstaller --noconfirm nomerok3d.spec
+
+      - name: Диагностика при неудаче
+        if: failure()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $diag = Join-Path $env:RUNNER_TEMP "diag.txt"
+          if (-not (Test-Path $diag)) { "нечего сообщать"; exit 0 }
+          $body = Get-Content $diag -Raw
+          Add-Content $env:GITHUB_STEP_SUMMARY "``````$body``````"
+          $json = @{ body = "Диагностика сборки exe:" + [char]10 + '```' + [char]10 + $body + [char]10 + '```' } | ConvertTo-Json -Compress
+          $json | gh api "repos/$env:GITHUB_REPOSITORY/commits/$env:GITHUB_SHA/comments" --input - > $null
+          "диагностика отправлена комментарием к коммиту"
+
       - uses: actions/upload-artifact@v4
         with:
           name: NOMEROK-3D-windows
@@ -73,9 +92,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $exe = (Get-ChildItem dist -Filter *.exe | Select-Object -First 1).FullName
+          $main = (Get-ChildItem dist -Filter "NOMEROK-3D.exe").FullName
+          $cons = (Get-ChildItem dist -Filter "NOMEROK-3D-console.exe").FullName
           gh release delete app-latest --yes --cleanup-tag 2>$null
-          gh release create app-latest "$exe" `
+          gh release create app-latest "$main" "$cons" `
             --target $env:GITHUB_SHA `
             --title "НОМЕРОК 3D — последняя сборка" `
             --notes "Конструктор брелоков-автономеров для Bambu Lab A1 без AMS.
@@ -87,4 +107,8 @@ jobs:
 
           Windows 10/11 x64. При первом запуске SmartScreen может спросить
           подтверждение: «Подробнее» → «Выполнить в любом случае» (файл без
-          цифровой подписи — это нормально)."
+          цифровой подписи — это нормально).
+
+          NOMEROK-3D-console.exe — тот же конструктор, но с чёрным окном, где
+          видно, что происходит. Нужен, только если основной файл не открылся:
+          запусти его и пришли текст из окна."

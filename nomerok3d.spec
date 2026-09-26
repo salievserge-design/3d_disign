@@ -1,7 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
 """Сборка НОМЕРОК 3D в один .exe:  pyinstaller --noconfirm --clean nomerok3d.spec"""
 
+import os
+
 from PyInstaller.utils.hooks import collect_all, collect_submodules
+
+# NOMEROK_CONSOLE=1 собирает консольный вариант: он печатает причину падения
+# текстом вместо молчаливого окна. Им проверяется сборка на CI, и он же идёт
+# в релиз вторым файлом — «запусти этот, если обычный не открывается».
+CONSOLE = os.environ.get("NOMEROK_CONSOLE") == "1"
 
 datas = [
     ("app/static", "app/static"),
@@ -45,14 +52,14 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="NOMEROK-3D",
+    name="NOMEROK-3D-console" if CONSOLE else "NOMEROK-3D",
     icon="app/icon.ico",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
     runtime_tmpdir=None,
-    console=False,               # обычное оконное приложение, без чёрной консоли
+    console=CONSOLE,             # обычно — оконное приложение, без чёрной консоли
     disable_windowed_traceback=False,
     version=None,
 )
