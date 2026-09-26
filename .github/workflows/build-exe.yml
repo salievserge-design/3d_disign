@@ -37,14 +37,21 @@ jobs:
 
       - name: Самопроверка собранного exe
         shell: pwsh
+        timeout-minutes: 6
         run: |
           $exe = Get-ChildItem dist -Filter *.exe | Select-Object -First 1
           if (-not $exe) { throw "exe не собрался" }
           "Собрано: $($exe.Name), $([math]::Round($exe.Length/1MB,1)) МБ"
           # прогоняем всю цепочку внутри собранного exe: геометрия, превью, запись файлов
-          $p = Start-Process -FilePath $exe.FullName -ArgumentList "--selftest" -PassThru -Wait
           $log = Join-Path $env:TEMP "nomerok3d.log"
-          if (Test-Path $log) { Get-Content $log }
+          Remove-Item $log -ErrorAction SilentlyContinue
+          $p = Start-Process -FilePath $exe.FullName -ArgumentList "--selftest" -PassThru
+          if (-not $p.WaitForExit(240000)) {
+            $p.Kill(); Start-Sleep 2
+            if (Test-Path $log) { Get-Content $log }
+            throw "exe завис на самопроверке — окно не открылось, но и не завершился"
+          }
+          if (Test-Path $log) { Get-Content $log } else { "лог не появился — exe умер на старте" }
           if ($p.ExitCode -ne 0) { throw "самопроверка не прошла (код $($p.ExitCode))" }
 
       - uses: actions/upload-artifact@v4

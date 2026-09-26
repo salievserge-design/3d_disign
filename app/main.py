@@ -25,6 +25,7 @@ from app import server                                            # noqa: E402
 
 TITLE = f"{server.APP_NAME} {server.APP_VERSION} — конструктор брелоков-автономеров"
 LOG = os.path.join(tempfile.gettempdir(), "nomerok3d.log")
+QUIET = "--selftest" in sys.argv     # на сборочной машине диалоги показывать некому
 
 
 def log(text: str) -> None:
@@ -40,12 +41,16 @@ def log(text: str) -> None:
 
 
 def message_box(text: str, title: str = server.APP_NAME) -> None:
-    """Сообщение пользователю там, где консоли нет."""
+    """Сообщение пользователю там, где консоли нет.
+    В режиме самопроверки молчим: модальное окно на CI повесило бы сборку."""
+    log(text)
+    if QUIET:
+        return
     try:
         import ctypes
         ctypes.windll.user32.MessageBoxW(0, text, title, 0x40)
     except Exception:
-        log(text)
+        pass
 
 
 def free_port() -> int:
@@ -106,7 +111,8 @@ def main() -> int:
 
     try:
         import webview
-    except ImportError:
+    except Exception as e:                # не только ImportError: pythonnet, WebView2…
+        log(f"pywebview недоступен: {e}")
         webview = None
 
     if webview is None:
