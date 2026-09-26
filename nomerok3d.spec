@@ -18,8 +18,10 @@ datas = [
 ]
 binaries, hiddenimports = [], ["app", "app.core", "app.server", "generate_keychain"]
 
-# шапки-невидимки: shapely/manifold3d/trimesh тащат за собой бинарники и данные
-for pkg in ("shapely", "trimesh", "manifold3d", "mapbox_earcut", "fontTools", "flask", "webview"):
+# шапки-невидимки: numpy/shapely/manifold3d/trimesh тащат за собой бинарники,
+# данные и подмодули, которые автоматика PyInstaller находит не всегда
+for pkg in ("numpy", "shapely", "trimesh", "manifold3d", "mapbox_earcut",
+            "fontTools", "flask", "webview"):
     try:
         d, b, h = collect_all(pkg)
         datas += d

@@ -1,10 +1,14 @@
-# зависимости настольного приложения (без matplotlib — он нужен только CLI-генератору)
-flask>=3.0
-numpy>=1.26
-shapely>=2.0
-trimesh>=4.0
-mapbox_earcut>=1.0
-manifold3d>=2.3
-fonttools>=4.40
-pillow>=10.0
-pywebview>=5.0 ; sys_platform == "win32"
+# Зависимости настольного приложения НОМЕРОК 3D.
+# Версии зафиксированы по проверенному окружению: обновлять — только вместе
+# с прогоном самопроверки собранного exe (app/main.py --selftest).
+# matplotlib здесь не нужен: он используется только 3D-превью в CLI-генераторе.
+flask==3.1.3
+numpy==2.2.6
+shapely==2.1.2
+trimesh==5.1.0
+networkx==3.6.1
+mapbox_earcut==1.0.3
+manifold3d==3.5.4
+fonttools==4.66.0
+pillow==12.3.0
+pywebview==5.4 ; sys_platform == "win32"

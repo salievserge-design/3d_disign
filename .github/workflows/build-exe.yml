@@ -30,7 +30,8 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-app.txt
-          pip install pyinstaller==6.11.1
+          pip install "pyinstaller>=6.16"
+          python -c "import numpy, PyInstaller; print('numpy', numpy.__version__, '| pyinstaller', PyInstaller.__version__)"
 
       - name: Проверка исходников до сборки
         run: python -m app.main --selftest
